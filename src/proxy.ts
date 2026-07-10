@@ -2,10 +2,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getAuthInfoFromCookie } from '@/lib/auth';
+import { getAuthInfoFromCookie, validateAuthInfo } from '@/lib/auth';
 
 // 信任网络配置缓存（从 API 获取）
-let trustedNetworkCache: { enabled: boolean; trustedIPs: string[]; blockAdminAccess: boolean } | null = null;
+let trustedNetworkCache: {
+  enabled: boolean;
+  trustedIPs: string[];
+  blockAdminAccess: boolean;
+} | null = null;
 let trustedNetworkCacheTime = 0;
 let trustedNetworkFetched = false;
 let trustedNetworkVersion = ''; // 跟踪配置版本，用于立即失效缓存
@@ -13,24 +17,37 @@ let trustedNetworkVersion = ''; // 跟踪配置版本，用于立即失效缓存
 const CACHE_TTL = 86400000; // 24 小时缓存（配置变化时通过 cookie 版本号立即刷新）
 
 // 从环境变量获取信任网络配置（优先）
-function getTrustedNetworkFromEnv(): { enabled: boolean; trustedIPs: string[]; blockAdminAccess: boolean } | null {
+function getTrustedNetworkFromEnv(): {
+  enabled: boolean;
+  trustedIPs: string[];
+  blockAdminAccess: boolean;
+} | null {
   const trustedIPs = process.env.TRUSTED_NETWORK_IPS;
   if (!trustedIPs) return null;
 
   return {
     enabled: true,
-    trustedIPs: trustedIPs.split(',').map(ip => ip.trim()).filter(Boolean),
+    trustedIPs: trustedIPs
+      .split(',')
+      .map((ip) => ip.trim())
+      .filter(Boolean),
     blockAdminAccess: false,
   };
 }
 
 // 从 API 获取信任网络配置（数据库）
-async function getTrustedNetworkFromAPI(request: NextRequest): Promise<{ enabled: boolean; trustedIPs: string[]; blockAdminAccess: boolean } | null> {
+async function getTrustedNetworkFromAPI(
+  request: NextRequest,
+): Promise<{
+  enabled: boolean;
+  trustedIPs: string[];
+  blockAdminAccess: boolean;
+} | null> {
   const now = Date.now();
 
   // 检查缓存是否有效
   if (trustedNetworkFetched && trustedNetworkCache !== null) {
-    if ((now - trustedNetworkCacheTime) < CACHE_TTL) {
+    if (now - trustedNetworkCacheTime < CACHE_TTL) {
       if (!trustedNetworkCache.enabled) {
         return null;
       }
@@ -40,7 +57,7 @@ async function getTrustedNetworkFromAPI(request: NextRequest): Promise<{ enabled
 
   // 如果已经获取过且结果是"未配置"，使用长缓存时间
   if (trustedNetworkFetched && trustedNetworkCache === null) {
-    if ((now - trustedNetworkCacheTime) < CACHE_TTL) {
+    if (now - trustedNetworkCacheTime < CACHE_TTL) {
       return null;
     }
   }
@@ -76,17 +93,31 @@ async function getTrustedNetworkFromAPI(request: NextRequest): Promise<{ enabled
     }
 
     // API 返回但没有配置 - 标记为禁用而不是 null，这样走禁用缓存逻辑
-    trustedNetworkCache = { enabled: false, trustedIPs: [], blockAdminAccess: false };
+    trustedNetworkCache = {
+      enabled: false,
+      trustedIPs: [],
+      blockAdminAccess: false,
+    };
   } catch {
     // 请求失败时标记为禁用，使用长缓存时间避免频繁重试
-    trustedNetworkCache = { enabled: false, trustedIPs: [], blockAdminAccess: false };
+    trustedNetworkCache = {
+      enabled: false,
+      trustedIPs: [],
+      blockAdminAccess: false,
+    };
   }
 
   return null;
 }
 
 // 获取信任网络配置（环境变量优先，然后数据库）
-async function getTrustedNetworkConfig(request: NextRequest): Promise<{ enabled: boolean; trustedIPs: string[]; blockAdminAccess: boolean } | null> {
+async function getTrustedNetworkConfig(
+  request: NextRequest,
+): Promise<{
+  enabled: boolean;
+  trustedIPs: string[];
+  blockAdminAccess: boolean;
+} | null> {
   // 环境变量优先
   const envConfig = getTrustedNetworkFromEnv();
   if (envConfig) return envConfig;
@@ -137,7 +168,9 @@ function isIPInCIDR(clientIP: string, cidr: string): boolean {
     if (cidr.includes('/')) {
       const [network] = cidr.split('/');
       // 简化：检查是否以相同前缀开始
-      return clientIP.toLowerCase().startsWith(network.toLowerCase().replace(/:+$/, ''));
+      return clientIP
+        .toLowerCase()
+        .startsWith(network.toLowerCase().replace(/:+$/, ''));
     }
     return clientIP.toLowerCase() === cidr.toLowerCase();
   }
@@ -151,11 +184,20 @@ function isIPInCIDR(clientIP: string, cidr: string): boolean {
     const clientParts = clientIP.split('.').map(Number);
 
     if (clientParts.length !== 4 || networkParts.length !== 4) return false;
-    if (clientParts.some(p => isNaN(p)) || networkParts.some(p => isNaN(p))) return false;
+    if (clientParts.some((p) => isNaN(p)) || networkParts.some((p) => isNaN(p)))
+      return false;
 
     // 转换为 32 位整数
-    const networkInt = (networkParts[0] << 24) | (networkParts[1] << 16) | (networkParts[2] << 8) | networkParts[3];
-    const clientInt = (clientParts[0] << 24) | (clientParts[1] << 16) | (clientParts[2] << 8) | clientParts[3];
+    const networkInt =
+      (networkParts[0] << 24) |
+      (networkParts[1] << 16) |
+      (networkParts[2] << 8) |
+      networkParts[3];
+    const clientInt =
+      (clientParts[0] << 24) |
+      (clientParts[1] << 16) |
+      (clientParts[2] << 8) |
+      clientParts[3];
 
     // 生成掩码
     const maskInt = mask === 0 ? 0 : (~0 << (32 - mask)) >>> 0;
@@ -169,7 +211,7 @@ function isIPInCIDR(clientIP: string, cidr: string): boolean {
 
 // 检查 IP 是否在信任网络中
 function isIPTrusted(clientIP: string, trustedIPs: string[]): boolean {
-  return trustedIPs.some(trustedIP => isIPInCIDR(clientIP, trustedIP.trim()));
+  return trustedIPs.some((trustedIP) => isIPInCIDR(clientIP, trustedIP.trim()));
 }
 
 // 生成信任网络的自动登录 cookie
@@ -257,11 +299,14 @@ export async function proxy(request: NextRequest) {
 async function handleAuthentication(
   request: NextRequest,
   pathname: string,
-  response?: NextResponse
+  response?: NextResponse,
 ) {
   // 🔥 检查信任网络模式（环境变量优先，然后数据库）
   const trustedNetworkConfig = await getTrustedNetworkConfig(request);
-  if (trustedNetworkConfig?.enabled && trustedNetworkConfig.trustedIPs.length > 0) {
+  if (
+    trustedNetworkConfig?.enabled &&
+    trustedNetworkConfig.trustedIPs.length > 0
+  ) {
     const clientIP = getClientIP(request);
 
     if (isIPTrusted(clientIP, trustedNetworkConfig.trustedIPs)) {
@@ -273,11 +318,15 @@ async function handleAuthentication(
         // 不签发也不复用 trustedNetwork cookie，让请求走标准认证流程
         // 后面 authInfo.trustedNetwork 短路那里还会再拦一次（针对已有 cookie 的情况）
       } else {
-        console.log(`[Middleware] Trusted network auto-login for IP: ${clientIP}`);
+        console.log(
+          `[Middleware] Trusted network auto-login for IP: ${clientIP}`,
+        );
 
         // 检查是否已经有有效的认证 cookie
-        const existingAuth = getAuthInfoFromCookie(request);
-        if (existingAuth && (existingAuth.password || existingAuth.trustedNetwork || existingAuth.signature)) {
+        const existingAuth = await validateAuthInfo(
+          getAuthInfoFromCookie(request),
+        );
+        if (existingAuth) {
           return response || NextResponse.next();
         }
 
@@ -304,7 +353,8 @@ async function handleAuthentication(
 
   // localstorage模式：在middleware中完成验证
   if (storageType === 'localstorage') {
-    if (!authInfo.password || authInfo.password !== process.env.PASSWORD) {
+    const validAuth = await validateAuthInfo(authInfo, { storageType });
+    if (!validAuth) {
       return handleAuthFailure(request, pathname);
     }
     return response || NextResponse.next();
@@ -333,7 +383,7 @@ async function handleAuthentication(
     const isValidSignature = await verifySignature(
       authInfo.username,
       authInfo.signature,
-      process.env.PASSWORD || ''
+      process.env.PASSWORD || '',
     );
 
     // 签名验证通过即可
@@ -350,7 +400,7 @@ async function handleAuthentication(
 async function verifySignature(
   data: string,
   signature: string,
-  secret: string
+  secret: string,
 ): Promise<boolean> {
   const encoder = new TextEncoder();
   const keyData = encoder.encode(secret);
@@ -363,12 +413,12 @@ async function verifySignature(
       keyData,
       { name: 'HMAC', hash: 'SHA-256' },
       false,
-      ['verify']
+      ['verify'],
     );
 
     // 将十六进制字符串转换为Uint8Array
     const signatureBuffer = new Uint8Array(
-      signature.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []
+      signature.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || [],
     );
 
     // 验证签名
@@ -376,7 +426,7 @@ async function verifySignature(
       'HMAC',
       key,
       signatureBuffer,
-      messageData
+      messageData,
     );
   } catch (error) {
     console.error('签名验证失败:', error);
@@ -387,7 +437,7 @@ async function verifySignature(
 // 处理认证失败的情况
 function handleAuthFailure(
   request: NextRequest,
-  pathname: string
+  pathname: string,
 ): NextResponse {
   // 如果是 API 路由，返回 401 状态码
   if (pathname.startsWith('/api')) {

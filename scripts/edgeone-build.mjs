@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 function loadLocalEnvFile() {
@@ -20,7 +27,10 @@ function loadLocalEnvFile() {
       value = value.slice(1, -1);
     }
     if (quote === '"') {
-      value = value.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      value = value
+        .replace(/\\n/g, '\n')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
     }
     process.env[match[1]] = value;
   }
@@ -29,35 +39,72 @@ function loadLocalEnvFile() {
 loadLocalEnvFile();
 
 const runtimeEnvKeys = [
-  'USERNAME', 'PASSWORD', 'NEXT_PUBLIC_STORAGE_TYPE',
-  'UPSTASH_URL', 'UPSTASH_TOKEN', 'TMDB_API_KEY',
-  'NEXT_PUBLIC_SITE_NAME', 'ANNOUNCEMENT', 'ENABLE_REGISTER',
-  'SITE_BASE', 'REDIS_URL', 'KVROCKS_URL',
+  'USERNAME',
+  'PASSWORD',
+  'NEXT_PUBLIC_STORAGE_TYPE',
+  'UPSTASH_URL',
+  'UPSTASH_TOKEN',
+  'TMDB_API_KEY',
+  'NEXT_PUBLIC_SITE_NAME',
+  'ANNOUNCEMENT',
+  'ENABLE_REGISTER',
+  'SITE_BASE',
+  'REDIS_URL',
+  'KVROCKS_URL',
   'NEXT_PUBLIC_SEARCH_MAX_PAGE',
-  'NEXT_PUBLIC_DOUBAN_PROXY_TYPE', 'NEXT_PUBLIC_DOUBAN_PROXY',
-  'NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE', 'NEXT_PUBLIC_DOUBAN_IMAGE_PROXY',
-  'NEXT_PUBLIC_DISABLE_YELLOW_FILTER', 'NEXT_PUBLIC_FLUID_SEARCH',
-  'NEXT_PUBLIC_BANGUMI_API_TYPE', 'NEXT_PUBLIC_BANGUMI_API_PROXY',
-  'NEXT_PUBLIC_BANGUMI_IMAGE_PROXY_TYPE', 'NEXT_PUBLIC_BANGUMI_IMAGE_PROXY',
-  'NEXT_PUBLIC_CORSAPI_URL', 'NEXT_PUBLIC_SUB_URL',
-  'DISABLE_HERO_TRAILER', 'DISABLE_SSRF_PROTECTION',
-  'TVBOX_SUBSCRIBE_TOKEN', 'TRUSTED_NETWORK_IPS',
+  'NEXT_PUBLIC_DOUBAN_PROXY_TYPE',
+  'NEXT_PUBLIC_DOUBAN_PROXY',
+  'NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE',
+  'NEXT_PUBLIC_DOUBAN_IMAGE_PROXY',
+  'NEXT_PUBLIC_DISABLE_YELLOW_FILTER',
+  'NEXT_PUBLIC_FLUID_SEARCH',
+  'NEXT_PUBLIC_BANGUMI_API_TYPE',
+  'NEXT_PUBLIC_BANGUMI_API_PROXY',
+  'NEXT_PUBLIC_BANGUMI_IMAGE_PROXY_TYPE',
+  'NEXT_PUBLIC_BANGUMI_IMAGE_PROXY',
+  'NEXT_PUBLIC_CORSAPI_URL',
+  'NEXT_PUBLIC_SUB_URL',
+  'DISABLE_HERO_TRAILER',
+  'DISABLE_SSRF_PROTECTION',
+  'TVBOX_SUBSCRIBE_TOKEN',
+  'TRUSTED_NETWORK_IPS',
 ];
 
 // 跳过认证的路径：静态资源、登录/注册页、公开 API
 const skipPaths = [
-  '/_next', '/favicon.ico', '/robots.txt', '/manifest.json',
-  '/icons/', '/logo.png', '/screenshot.png',
-  '/login', '/register', '/oidc-register', '/warning',
-  '/api/login', '/api/register', '/api/logout', '/api/cron',
-  '/api/server-config', '/api/tvbox', '/api/tvbox-config',
-  '/api/live/merged', '/api/parse', '/api/bing-wallpaper',
-  '/api/proxy/', '/api/telegram/', '/api/auth/oidc/',
-  '/api/watch-room/', '/api/cache/', '/api/client-log',
+  '/_next',
+  '/favicon.ico',
+  '/robots.txt',
+  '/manifest.json',
+  '/icons/',
+  '/logo.png',
+  '/screenshot.png',
+  '/login',
+  '/register',
+  '/oidc-register',
+  '/warning',
+  '/api/login',
+  '/api/register',
+  '/api/logout',
+  '/api/cron',
+  '/api/server-config',
+  '/api/tvbox',
+  '/api/tvbox-config',
+  '/api/live/merged',
+  '/api/parse',
+  '/api/bing-wallpaper',
+  '/api/proxy/',
+  '/api/telegram/',
+  '/api/auth/oidc/',
+  '/api/watch-room/',
+  '/api/cache/',
+  '/api/client-log',
 ];
 
 // 用于 layout 注入时过滤掉 API 路径（API 认证由 edge middleware 处理）
-const pageSkipPaths = JSON.stringify(skipPaths.filter(p => !p.startsWith('/api/')));
+const pageSkipPaths = JSON.stringify(
+  skipPaths.filter((p) => !p.startsWith('/api/')),
+);
 
 let savedProxyContent = null;
 let savedLayoutContent = null;
@@ -118,7 +165,9 @@ function replaceEnvLiterals(code, envLiteral) {
     }
 
     if (depth !== 0) {
-      console.warn('[edgeone-build] Unable to replace an env literal: malformed object');
+      console.warn(
+        '[edgeone-build] Unable to replace an env literal: malformed object',
+      );
       output += code.slice(cursor);
       break;
     }
@@ -129,14 +178,21 @@ function replaceEnvLiterals(code, envLiteral) {
   }
 
   if (replaced > 0) {
-    console.log(`[edgeone-build] Replaced ${replaced} generated env literal(s) with filtered runtime env`);
+    console.log(
+      `[edgeone-build] Replaced ${replaced} generated env literal(s) with filtered runtime env`,
+    );
   }
 
   return output;
 }
 
 function patchEdgeFunctionEnvInjection() {
-  const edgeFunctionPath = join(process.cwd(), '.edgeone', 'edge-functions', 'index.js');
+  const edgeFunctionPath = join(
+    process.cwd(),
+    '.edgeone',
+    'edge-functions',
+    'index.js',
+  );
   let code;
   try {
     code = readFileSync(edgeFunctionPath, 'utf8');
@@ -151,11 +207,13 @@ function patchEdgeFunctionEnvInjection() {
 
   const target = 'let request = context.request;';
   if (!code.includes(marker) && !code.includes(target)) {
-    console.warn('[edgeone-build] Unable to patch edge function env injection: target not found');
+    console.warn(
+      '[edgeone-build] Unable to patch edge function env injection: target not found',
+    );
   } else if (!code.includes(marker)) {
     code = code.replace(
       target,
-      `${target}\n          ${marker}\n          if (typeof globalThis !== 'undefined' && globalThis.process?.env && context?.env) {\n            Object.assign(globalThis.process.env, context.env);\n          }`
+      `${target}\n          ${marker}\n          if (typeof globalThis !== 'undefined' && globalThis.process?.env && context?.env) {\n            Object.assign(globalThis.process.env, context.env);\n          }`,
     );
   }
 
@@ -163,11 +221,13 @@ function patchEdgeFunctionEnvInjection() {
   const middlewareSignature = 'async function executeMiddleware({request}) {';
   const middlewareMarker = '/* edgeone-middleware-env-injected */';
   if (!code.includes(middlewareMarker) && !code.includes(middlewareSignature)) {
-    console.warn('[edgeone-build] Unable to patch middleware env injection: target not found');
+    console.warn(
+      '[edgeone-build] Unable to patch middleware env injection: target not found',
+    );
   } else if (!code.includes(middlewareMarker)) {
     code = code.replace(
       middlewareSignature,
-      `async function executeMiddleware({request, env}) {\n  ${middlewareMarker}\n  if (typeof globalThis !== 'undefined' && globalThis.process?.env && env) {\n    Object.assign(globalThis.process.env, env);\n  }`
+      `async function executeMiddleware({request, env}) {\n  ${middlewareMarker}\n  if (typeof globalThis !== 'undefined' && globalThis.process?.env && env) {\n    Object.assign(globalThis.process.env, env);\n  }`,
     );
   }
 
@@ -188,13 +248,16 @@ function convertProxyToMiddlewareForBuild() {
   savedProxyContent = readFileSync(proxyPath, 'utf8');
   let content = savedProxyContent;
 
-  content = content.replace(/export async function proxy\b/, 'export async function middleware');
+  content = content.replace(
+    /export async function proxy\b/,
+    'export async function middleware',
+  );
 
   // 简化 matcher：EdgeOne 不支持 (?!...)，改用匹配所有路径
   // 注意：不能用 /:path+（不匹配根路径 /），必须用 /:path*
   content = content.replace(
     /export const config = \{[\s\S]*?matcher[\s\S]*?\};/,
-    `export const config = { matcher: ['/', '/:path*'] };`
+    `export const config = { matcher: ['/', '/:path*'] };`,
   );
 
   // 在 middleware 函数体开头注入跳过路径检查
@@ -207,7 +270,8 @@ function convertProxyToMiddlewareForBuild() {
     return NextResponse.next();
   }`;
 
-  const destructureRegex = /(const\s*\{\s*pathname\s*\}\s*=\s*request\.nextUrl\s*;)/;
+  const destructureRegex =
+    /(const\s*\{\s*pathname\s*\}\s*=\s*request\.nextUrl\s*;)/;
   if (destructureRegex.test(content)) {
     content = content.replace(destructureRegex, `$1${skipInjection}`);
   } else {
@@ -225,7 +289,9 @@ function convertProxyToMiddlewareForBuild() {
 
   renameSync(proxyPath, backupPath);
   writeFileSync(middlewarePath, content);
-  console.log('[edgeone-build] Created temporary middleware.ts with skip-paths injection');
+  console.log(
+    '[edgeone-build] Created temporary middleware.ts with skip-paths injection',
+  );
   return true;
 }
 
@@ -254,7 +320,8 @@ function injectLayoutAuthCheck() {
   }
   let content = original.replace(
     importMarker,
-    `${importMarker}\n${marker}\nimport { redirect } from 'next/navigation';\nimport { headers } from 'next/headers';`
+    `${importMarker}\n${marker}\nimport { redirect } from 'next/navigation';\nimport { headers } from 'next/headers';
+import { validateAuthInfo } from '@/lib/auth';`,
   );
 
   // 找 RootLayout 函数体内的 await cookies()，不是第一个（generateMetadata 里的）
@@ -301,11 +368,22 @@ function injectLayoutAuthCheck() {
   }
 
   const __skipPaths = ${pageSkipPaths};
-  if (__path && !__skipPaths.some((p) => __path.startsWith(p))) {
+  const __isPagePathKnown = Boolean(__path);
+  const __guardPath = __isPagePathKnown ? __path : '/';
+  if (!__skipPaths.some((p) => __guardPath.startsWith(p))) {
     const __cookieStore = await cookies();
     const __authCookie = __cookieStore.get('user_auth') || __cookieStore.get('auth');
-    if (!__authCookie) {
-      redirect('/login?redirect=' + encodeURIComponent(__path + (__h.get('x-search') || __search)));
+    let __authInfo = null;
+    if (__authCookie?.value) {
+      try {
+        __authInfo = JSON.parse(decodeURIComponent(__authCookie.value));
+      } catch {
+        __authInfo = null;
+      }
+    }
+    const __validAuth = await validateAuthInfo(__authInfo);
+    if (!__validAuth) {
+      redirect('/login?redirect=' + encodeURIComponent(__guardPath + (__h.get('x-search') || __search)));
     }
   }
 `;
@@ -314,7 +392,9 @@ function injectLayoutAuthCheck() {
   content = content.slice(0, insertPos) + authCheck + content.slice(insertPos);
 
   writeFileSync(layoutPath, content);
-  console.log('[edgeone-build] Injected SSR auth check into RootLayout in layout.tsx');
+  console.log(
+    '[edgeone-build] Injected SSR auth check into RootLayout in layout.tsx',
+  );
   return true;
 }
 
@@ -342,7 +422,10 @@ function restoreProxyAfterBuild(wasConverted) {
 
 function restoreLayoutAfterBuild() {
   if (!savedLayoutContent) return;
-  writeFileSync(join(process.cwd(), 'src', 'app', 'layout.tsx'), savedLayoutContent);
+  writeFileSync(
+    join(process.cwd(), 'src', 'app', 'layout.tsx'),
+    savedLayoutContent,
+  );
   savedLayoutContent = null;
   console.log('[edgeone-build] Restored layout.tsx');
 }
@@ -373,7 +456,10 @@ const child = spawn(command, {
 child.on('exit', (code, signal) => {
   if (!signal && code === 0) {
     for (const file of ['edgeone.json', 'package.json']) {
-      copyFileSync(join(process.cwd(), file), join(process.cwd(), '.edgeone', file));
+      copyFileSync(
+        join(process.cwd(), file),
+        join(process.cwd(), '.edgeone', file),
+      );
     }
 
     patchEdgeFunctionEnvInjection();
