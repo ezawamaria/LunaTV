@@ -44,9 +44,13 @@ const runtimeEnvKeys = [
   'TVBOX_SUBSCRIBE_TOKEN', 'TRUSTED_NETWORK_IPS',
 ];
 
-// 跳过认证的路径：静态资源、登录/注册页、公开 API
+// 跳过认证的路径：静态资源、登录/注册页、公开 API。
+//
+// 安全边界：不能对所有条目直接使用 startsWith。否则 /login-malicious、
+// /api/login-admin 等受保护路由会被误判为公开路径。仅以 / 结尾的目录前缀
+// 允许前缀匹配；其它页面或 API 端点必须精确匹配，或匹配其子路径边界。
 const skipPaths = [
-  '/_next', '/favicon.ico', '/robots.txt', '/manifest.json',
+  '/_next/', '/favicon.ico', '/robots.txt', '/manifest.json',
   '/icons/', '/logo.png', '/screenshot.png',
   '/login', '/register', '/oidc-register', '/warning',
   '/api/login', '/api/register', '/api/logout', '/api/cron',
@@ -56,8 +60,22 @@ const skipPaths = [
   '/api/watch-room/', '/api/cache/', '/api/client-log',
 ];
 
+function isPathAuthSkipped(pathname, paths = skipPaths) {
+  return paths.some((path) => {
+    if (path.endsWith('/')) {
+      return pathname === path.slice(0, -1) || pathname.startsWith(path);
+    }
+
+    return pathname === path || pathname.startsWith(`${path}/`);
+  });
+}
+
+function serializePathGuardFunction(paths) {
+  return `function(p){var sk=${JSON.stringify(paths)};for(var i=0;i<sk.length;i++){var s=sk[i];if(s.charAt(s.length-1)==='/'){if(p===s.slice(0,-1)||p.indexOf(s)===0)return true;}else if(p===s||p.indexOf(s+'/')===0)return true;}return false;}`;
+}
+
 // 用于 layout 注入时过滤掉 API 路径（API 认证由 edge middleware 处理）
-const pageSkipPaths = JSON.stringify(skipPaths.filter(p => !p.startsWith('/api/')));
+const pageSkipPaths = skipPaths.filter(p => !p.startsWith('/api/'));
 
 let savedProxyContent = null;
 let savedLayoutContent = null;
@@ -199,11 +217,11 @@ function convertProxyToMiddlewareForBuild() {
 
   // 在 middleware 函数体开头注入跳过路径检查
   // 替代原 matcher 负向前瞻排除的路径，避免 /login 被无限重定向
-  const skipPathsLiteral = JSON.stringify(skipPaths);
+  const pathGuardLiteral = serializePathGuardFunction(skipPaths);
   const skipInjection = `
   /* edgeone-middleware-skip-paths */
-  const __edgeOneSkipPaths = ${skipPathsLiteral};
-  if (__edgeOneSkipPaths.some((p) => pathname.startsWith(p))) {
+  const __edgeOneShouldSkipAuth = ${pathGuardLiteral};
+  if (__edgeOneShouldSkipAuth(pathname)) {
     return NextResponse.next();
   }`;
 
@@ -215,8 +233,8 @@ function convertProxyToMiddlewareForBuild() {
     const fallback = `
   /* edgeone-middleware-skip-paths */
   const __edgeOnePathname = request.nextUrl.pathname;
-  const __edgeOneSkipPaths = ${skipPathsLiteral};
-  if (__edgeOneSkipPaths.some((p) => __edgeOnePathname.startsWith(p))) {
+  const __edgeOneShouldSkipAuth = ${pathGuardLiteral};
+  if (__edgeOneShouldSkipAuth(__edgeOnePathname)) {
     return NextResponse.next();
   }`;
     const fnRegex = /(export\s+async\s+function\s+middleware\s*\([^)]*\)\s*\{)/;
@@ -258,7 +276,8 @@ function injectLayoutAuthCheck() {
     return false;
   }
 
-  const guardJs = `(function(){try{var p=window.location.pathname||'/';var q=window.location.search||'';var sk=${pageSkipPaths};for(var i=0;i<sk.length;i++){if(p.startsWith(sk[i]))return;}var ok=document.cookie.split(';').some(function(e){var t=e.trim();var x=t.indexOf('=');if(x<=0)return false;var n=t.slice(0,x);var v=t.slice(x+1);return(n==='user_auth'||n==='auth')&&v!=='';});if(ok)return;window.location.replace('/login?redirect='+encodeURIComponent(p+q));}catch(e){}})()`;
+  const pagePathGuardLiteral = serializePathGuardFunction(pageSkipPaths);
+  const guardJs = `(function(){try{var p=window.location.pathname||'/';var q=window.location.search||'';var skip=${pagePathGuardLiteral};if(skip(p))return;var ok=document.cookie.split(';').some(function(e){var t=e.trim();var x=t.indexOf('=');if(x<=0)return false;var n=t.slice(0,x);var v=t.slice(x+1);return(n==='user_auth'||n==='auth')&&v!=='';});if(ok)return;window.location.replace('/login?redirect='+encodeURIComponent(p+q));}catch(e){}})()`;
   const guardScript = `{/* edgeone-layout-auth-guard */}
         <script dangerouslySetInnerHTML={{ __html: ${JSON.stringify(guardJs)} }} />`;
   const insertPos = headIdx + headTag.length;
