@@ -44,9 +44,13 @@ const runtimeEnvKeys = [
   'TVBOX_SUBSCRIBE_TOKEN', 'TRUSTED_NETWORK_IPS',
 ];
 
-// 跳过认证的路径：静态资源、登录/注册页、公开 API
+// 跳过认证的路径：静态资源、登录/注册页、公开 API。
+//
+// 安全边界：不能对所有条目直接使用 startsWith。否则 /login-malicious、
+// /api/login-admin 等受保护路由会被误判为公开路径。仅以 / 结尾的目录前缀
+// 允许前缀匹配；其它页面或 API 端点必须精确匹配，或匹配其子路径边界。
 const skipPaths = [
-  '/_next', '/favicon.ico', '/robots.txt', '/manifest.json',
+  '/_next/', '/favicon.ico', '/robots.txt', '/manifest.json',
   '/icons/', '/logo.png', '/screenshot.png',
   '/login', '/register', '/oidc-register', '/warning',
   '/api/login', '/api/register', '/api/logout', '/api/cron',
@@ -56,8 +60,22 @@ const skipPaths = [
   '/api/watch-room/', '/api/cache/', '/api/client-log',
 ];
 
+function isPathAuthSkipped(pathname, paths = skipPaths) {
+  return paths.some((path) => {
+    if (path.endsWith('/')) {
+      return pathname === path.slice(0, -1) || pathname.startsWith(path);
+    }
+
+    return pathname === path || pathname.startsWith(`${path}/`);
+  });
+}
+
+function serializePathGuardFunction(paths) {
+  return `function(p){var sk=${JSON.stringify(paths)};for(var i=0;i<sk.length;i++){var s=sk[i];if(s.charAt(s.length-1)==='/'){if(p===s.slice(0,-1)||p.indexOf(s)===0)return true;}else if(p===s||p.indexOf(s+'/')===0)return true;}return false;}`;
+}
+
 // 用于 layout 注入时过滤掉 API 路径（API 认证由 edge middleware 处理）
-const pageSkipPaths = JSON.stringify(skipPaths.filter(p => !p.startsWith('/api/')));
+const pageSkipPaths = skipPaths.filter(p => !p.startsWith('/api/'));
 
 let savedProxyContent = null;
 let savedLayoutContent = null;
@@ -199,11 +217,11 @@ function convertProxyToMiddlewareForBuild() {
 
   // 在 middleware 函数体开头注入跳过路径检查
   // 替代原 matcher 负向前瞻排除的路径，避免 /login 被无限重定向
-  const skipPathsLiteral = JSON.stringify(skipPaths);
+  const pathGuardLiteral = serializePathGuardFunction(skipPaths);
   const skipInjection = `
   /* edgeone-middleware-skip-paths */
-  const __edgeOneSkipPaths = ${skipPathsLiteral};
-  if (__edgeOneSkipPaths.some((p) => pathname.startsWith(p))) {
+  const __edgeOneShouldSkipAuth = ${pathGuardLiteral};
+  if (__edgeOneShouldSkipAuth(pathname)) {
     return NextResponse.next();
   }`;
 
@@ -215,8 +233,8 @@ function convertProxyToMiddlewareForBuild() {
     const fallback = `
   /* edgeone-middleware-skip-paths */
   const __edgeOnePathname = request.nextUrl.pathname;
-  const __edgeOneSkipPaths = ${skipPathsLiteral};
-  if (__edgeOneSkipPaths.some((p) => __edgeOnePathname.startsWith(p))) {
+  const __edgeOneShouldSkipAuth = ${pathGuardLiteral};
+  if (__edgeOneShouldSkipAuth(__edgeOnePathname)) {
     return NextResponse.next();
   }`;
     const fnRegex = /(export\s+async\s+function\s+middleware\s*\([^)]*\)\s*\{)/;
@@ -229,10 +247,13 @@ function convertProxyToMiddlewareForBuild() {
   return true;
 }
 
-// 构建前：在 layout.tsx 的 RootLayout 函数体内注入服务端认证检查
-// EdgeOne 页面请求绕过 edge middleware，需要在 SSR 层（RootLayout）做认证
-// 注意：layout.tsx 有两处 await cookies()，第一处在 generateMetadata，第二处才在 RootLayout
-// 必须注入到 RootLayout 内的那处，否则 generateMetadata 会触发 redirect 导致整个 app 崩溃
+// 构建前：在 layout.tsx 注入客户端认证 guard
+//
+// EdgeOne Pages 的页面 SSR 请求不会稳定经过 Next middleware，且 SSR 层无法可靠
+// 获取当前 pathname；此前服务端 guard 在 pathname 缺失时回退到 '/'，导致访问
+// /login 也会被误判为受保护页面并再次重定向到 /login，触发 ERR_TOO_MANY_REDIRECTS。
+// 因此这里不再注入任何服务端 redirect，只注入一个同步执行的 head script：它在
+// React 水合前基于浏览器真实 pathname 做兜底跳转，并显式放行登录/注册等公开页。
 function injectLayoutAuthCheck() {
   const layoutPath = join(process.cwd(), 'src', 'app', 'layout.tsx');
   if (!existsSync(layoutPath)) {
@@ -244,61 +265,26 @@ function injectLayoutAuthCheck() {
   savedLayoutContent = original;
 
   const marker = '/* edgeone-layout-auth-guard */';
-  if (original.includes(marker)) return true;
-
-  // 添加 imports
-  const importMarker = "import { cookies } from 'next/headers';";
-  if (!original.includes(importMarker)) {
-    console.warn('[edgeone-build] Cannot find cookies import in layout.tsx');
-    return false;
+  if (original.includes(marker)) {
+    return original.includes('window.location.replace') && original.includes('/login?redirect=');
   }
-  let content = original.replace(
-    importMarker,
-    `${importMarker}\n${marker}\nimport { redirect } from 'next/navigation';\nimport { headers } from 'next/headers';`
-  );
 
-  // 找 RootLayout 函数体内的 await cookies()，不是第一个（generateMetadata 里的）
-  // 通过先定位 "export default async function RootLayout" 再在其后找 await cookies()
-  const rootLayoutMarker = 'export default async function RootLayout(';
-  const rootLayoutIdx = content.indexOf(rootLayoutMarker);
-  if (rootLayoutIdx === -1) {
-    console.warn('[edgeone-build] Cannot find RootLayout in layout.tsx');
+  const headTag = '<head>';
+  const headIdx = original.indexOf(headTag);
+  if (headIdx === -1) {
+    console.warn('[edgeone-build] Cannot find <head> in layout.tsx');
     return false;
   }
 
-  const cookiesCall = 'await cookies();';
-  const idx = content.indexOf(cookiesCall, rootLayoutIdx);
-  if (idx === -1) {
-    console.warn('[edgeone-build] Cannot find "await cookies()" in RootLayout');
-    return false;
-  }
-
-  const authCheck = `
-  // EdgeOne SSR auth guard
-  const __h = await headers();
-  let __path = __h.get('x-pathname') || __h.get('x-invoke-path') || '';
-  if (!__path) {
-    const __ref = __h.get('referer') || '';
-    try { if (__ref) __path = new URL(__ref).pathname; } catch {}
-  }
-  if (!__path) __path = '/';
-
-  const __skipPaths = ${pageSkipPaths};
-  if (!__skipPaths.some((p) => __path.startsWith(p))) {
-    const __cookieStore = await cookies();
-    const __authCookie = __cookieStore.get('user_auth') || __cookieStore.get('auth');
-    if (!__authCookie) {
-      const __search = __h.get('x-search') || '';
-      redirect('/login?redirect=' + encodeURIComponent(__path + __search));
-    }
-  }
-`;
-
-  const insertPos = idx + cookiesCall.length;
-  content = content.slice(0, insertPos) + authCheck + content.slice(insertPos);
+  const pagePathGuardLiteral = serializePathGuardFunction(pageSkipPaths);
+  const guardJs = `(function(){try{var p=window.location.pathname||'/';var q=window.location.search||'';var skip=${pagePathGuardLiteral};if(skip(p))return;var ok=document.cookie.split(';').some(function(e){var t=e.trim();var x=t.indexOf('=');if(x<=0)return false;var n=t.slice(0,x);var v=t.slice(x+1);return(n==='user_auth'||n==='auth')&&v!=='';});if(ok)return;window.location.replace('/login?redirect='+encodeURIComponent(p+q));}catch(e){}})()`;
+  const guardScript = `{/* edgeone-layout-auth-guard */}
+        <script dangerouslySetInnerHTML={{ __html: ${JSON.stringify(guardJs)} }} />`;
+  const insertPos = headIdx + headTag.length;
+  const content = original.slice(0, insertPos) + '\n        ' + guardScript + original.slice(insertPos);
 
   writeFileSync(layoutPath, content);
-  console.log('[edgeone-build] Injected SSR auth check into RootLayout in layout.tsx');
+  console.log('[edgeone-build] Injected client auth guard into layout.tsx <head>');
   return true;
 }
 
@@ -333,7 +319,10 @@ function restoreLayoutAfterBuild() {
 
 // 构建前准备
 const wasConverted = convertProxyToMiddlewareForBuild();
-injectLayoutAuthCheck();
+if (!injectLayoutAuthCheck()) {
+  restoreProxyAfterBuild(wasConverted);
+  throw new Error('[edgeone-build] Failed to inject EdgeOne auth guard; abort build to avoid exposing protected pages');
+}
 
 // 确保异常退出时也能清理
 process.on('exit', () => {
